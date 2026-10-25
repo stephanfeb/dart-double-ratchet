@@ -14,8 +14,19 @@ import 'x3dh.dart';
 ///
 /// Use one [SessionCipher] for a set of stores: it runs the calls for one
 /// address one at a time, so that two of them do not read the same session
-/// state and write back two different ones. A call that fails changes no
-/// state.
+/// state and write back two different ones, and it starts one session from
+/// a pre-key message at a time, so that a one-time pre-key is used once. A
+/// call that fails changes no state.
+///
+/// Which session is current changes only when this side starts one
+/// ([processBundle]), when the other side starts one (a new pre-key
+/// message), or when a message arrives in another session while the current
+/// one is still unanswered. A message in an earlier session is read, but
+/// does not make that session current again.
+///
+/// Each forged message costs up to [maxStates] decryption attempts, each
+/// with up to 2 x [RatchetLimits.maxSkip] HMACs, before it fails: limit
+/// what one sender can deliver.
 class SessionCipher {
   final IdentityStore identities;
   final PreKeyStore preKeys;
@@ -27,11 +38,11 @@ class SessionCipher {
   /// earlier ones).
   final int maxStates;
 
-  /// How many base keys of pre-key messages to remember for each address,
-  /// against replays.
-  final int maxSeenBaseKeys;
-
   final _locks = <String, Future<void>>{};
+
+  /// The key of the lock for starting sessions from pre-key messages; no
+  /// address is empty with a NUL in it.
+  static const _preKeyLock = '\u0000pre-keys';
 
   /// [application] names the protocol in the KDFs: both parties must use
   /// the same.
@@ -41,9 +52,13 @@ class SessionCipher {
     required this.sessions,
     required String application,
     this.limits = const RatchetLimits(),
-    this.maxStates = 10,
-    this.maxSeenBaseKeys = 64,
-  }) : info = ProtocolInfo(application);
+    this.maxStates = 5,
+  }) : info = ProtocolInfo(application) {
+    if (maxStates < 1) throw ArgumentError.value(maxStates, 'maxStates', 'at least 1');
+    if (limits.maxSkip < 0 || limits.maxSkippedKeys < limits.maxSkip) {
+      throw ArgumentError('maxSkippedKeys must be at least maxSkip, and maxSkip at least 0');
+    }
+  }
 
   /// Starts a session with [address] from its [bundle], as Alice (X3DH
   /// section 3.3). Messages sent before [address] answers carry what it
@@ -143,9 +158,17 @@ class SessionCipher {
     // second one and later belong to the session the first one started.
     final existing =
         record.states.where((s) => s.baseKey == message.baseKey && s.remoteIdentity == message.identityKey).toList();
-    if (existing.isNotEmpty) return _decryptWith(address, record, existing, message.message);
-    if (record.hasSeen(message.baseKey)) throw const DuplicateMessageException('pre-key message replayed');
+    if (existing.isNotEmpty) return _decryptWith(address, record, existing, message.message, promote: false);
+    // A new session: one at a time across all addresses, so that a pre-key
+    // message replayed to another address (or at the same moment) finds
+    // its base key used and its one-time pre-key gone.
+    return _locked(_preKeyLock, () => _startSession(address, record, message));
+  }
 
+  Future<Uint8List> _startSession(String address, SessionRecord record, PreKeyMessage message) async {
+    if (await preKeys.isBaseKeyUsed(message.signedPreKeyId, message.baseKey)) {
+      throw const DuplicateMessageException('pre-key message replayed');
+    }
     final signed = await preKeys.loadSignedPreKey(message.signedPreKeyId);
     if (signed == null) throw InvalidKeyIdException('no signed pre-key ${message.signedPreKeyId}');
     OneTimePreKey? oneTime;
@@ -175,32 +198,53 @@ class SessionCipher {
       ratchet: ratchetInitBob(sk, signed.keyPair),
     );
     final plaintext = await _ratchetDecrypt(state.ratchet, message.message, state.ad);
-    record
-      ..promote(state, maxStates)
-      ..sawBaseKey(message.baseKey, maxSeenBaseKeys);
-    await sessions.storeSession(address, record.encode());
+    // Both sides started a session at once, and ours is unanswered: both
+    // keep the session with the lower base key current, so they agree.
+    final current = record.current;
+    if (current != null && current.pending != null && _lower(current.baseKey, state.baseKey)) {
+      record.keep(state, maxStates);
+    } else {
+      record.promote(state, maxStates);
+    }
+    await preKeys.markBaseKeyUsed(message.signedPreKeyId, message.baseKey);
     if (oneTime != null) await preKeys.removeOneTimePreKey(oneTime.id);
+    await sessions.storeSession(address, record.encode());
     await identities.saveIdentity(address, message.identityKey);
     return plaintext;
   }
 
-  /// Tries [candidates] (states of [record]) in order; the first that
-  /// decrypts becomes current.
+  static bool _lower(DhPublicKey a, DhPublicKey b) {
+    for (var i = 0; i < a.bytes.length; i++) {
+      if (a.bytes[i] != b.bytes[i]) return a.bytes[i] < b.bytes[i];
+    }
+    return false;
+  }
+
+  /// Tries [candidates] (states of [record]): those that know the header's
+  /// ratchet key first, then the others in order. With [promote], the one
+  /// that decrypts becomes current when the current one is unanswered (the
+  /// other side has settled on that one).
   Future<Uint8List> _decryptWith(
     String address,
     SessionRecord record,
     List<SessionState> candidates,
-    RatchetMessage message,
-  ) async {
+    RatchetMessage message, {
+    bool promote = true,
+  }) async {
+    final dh = message.header.dh;
+    bool knows(SessionState s) =>
+        s.ratchet.dhr == dh || s.ratchet.skipped.containsKey(RatchetState.skippedKey(dh, message.header.n));
+    final ordered = [...candidates.where(knows), ...candidates.where((s) => !knows(s))];
     DoubleRatchetException? failure;
-    for (final state in [...candidates]) {
+    for (final state in ordered) {
       final attempt = state.ratchet.copy();
       try {
         final plaintext = await _ratchetDecrypt(attempt, message, state.ad);
+        final current = record.current;
         state
           ..ratchet = attempt
           ..pending = null;
-        record.promote(state, maxStates);
+        if (promote && current != state && current?.pending != null) record.promote(state, maxStates);
         await sessions.storeSession(address, record.encode());
         return plaintext;
       } on DuplicateMessageException catch (e) {
@@ -222,7 +266,12 @@ class SessionCipher {
 
   Future<SessionRecord?> _load(String address) async {
     final bytes = await sessions.loadSession(address);
-    return bytes == null ? null : SessionRecord.decode(bytes);
+    if (bytes == null) return null;
+    try {
+      return SessionRecord.decode(bytes);
+    } on DoubleRatchetException catch (e) {
+      throw InvalidSessionRecordException('session record for $address: ${e.message}');
+    }
   }
 
   Future<T> _locked<T>(String address, Future<T> Function() body) {

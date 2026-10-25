@@ -57,9 +57,9 @@ final class SessionState {
     final ad = r.blob();
     final baseKey = DhPublicKey(r.bytes(32));
     PendingPreKey? pending;
-    if (r.u8() == 1) {
+    if (_flag(r)) {
       final spk = r.u32();
-      pending = PendingPreKey(spk, r.u8() == 1 ? r.u32() : null);
+      pending = PendingPreKey(spk, _flag(r) ? r.u32() : null);
     }
     return SessionState(
       remoteIdentity: identity,
@@ -71,6 +71,12 @@ final class SessionState {
   }
 }
 
+bool _flag(ByteReader r) => switch (r.u8()) {
+      0 => false,
+      1 => true,
+      _ => throw const InvalidMessageException('bad flag'),
+    };
+
 const _recordVersion = 1;
 
 /// Every session with one address: the current one first, then earlier
@@ -80,14 +86,7 @@ const _recordVersion = 1;
 final class SessionRecord {
   final List<SessionState> states;
 
-  /// Alice's base keys of sessions started as Bob, newest last, so that a
-  /// replayed pre-key message does not start its session again once that
-  /// session is no longer in [states].
-  final List<String> seenBaseKeys;
-
-  SessionRecord([List<SessionState>? states, List<String>? seenBaseKeys])
-      : states = states ?? [],
-        seenBaseKeys = seenBaseKeys ?? [];
+  SessionRecord([List<SessionState>? states]) : states = states ?? [];
 
   SessionState? get current => states.firstOrNull;
 
@@ -99,12 +98,14 @@ final class SessionRecord {
     if (states.length > maxStates) states.removeRange(maxStates, states.length);
   }
 
-  void sawBaseKey(DhPublicKey key, int max) {
-    seenBaseKeys.add(hex(key.bytes));
-    if (seenBaseKeys.length > max) seenBaseKeys.removeRange(0, seenBaseKeys.length - max);
+  /// Puts [state] second, after the current one, keeping at most
+  /// [maxStates] states.
+  void keep(SessionState state, int maxStates) {
+    states
+      ..remove(state)
+      ..insert(states.isEmpty ? 0 : 1, state);
+    if (states.length > maxStates) states.removeRange(maxStates, states.length);
   }
-
-  bool hasSeen(DhPublicKey key) => seenBaseKeys.contains(hex(key.bytes));
 
   Uint8List encode() {
     final w = ByteWriter()
@@ -112,10 +113,6 @@ final class SessionRecord {
       ..u32(states.length);
     for (final s in states) {
       s.write(w);
-    }
-    w.u32(seenBaseKeys.length);
-    for (final k in seenBaseKeys) {
-      w.bytes(Uint8List.fromList([for (var i = 0; i < k.length; i += 2) int.parse(k.substring(i, i + 2), radix: 16)]));
     }
     return w.take();
   }
@@ -125,8 +122,7 @@ final class SessionRecord {
     final r = ByteReader(bytes);
     if (r.u8() != _recordVersion) throw const InvalidMessageException('unknown session record version');
     final states = [for (var i = r.u32(); i > 0; i--) SessionState.read(r)];
-    final seen = [for (var i = r.u32(); i > 0; i--) hex(r.bytes(32))];
     r.end();
-    return SessionRecord(states, seen);
+    return SessionRecord(states);
   }
 }

@@ -55,14 +55,17 @@ An application supplies three stores:
   for each address. This is where trust is decided: trust on first use, a
   key checked out of band (a QR code, a safety number), or a key that the
   address itself is (a libp2p peer ID is an Ed25519 key).
-- `PreKeyStore`: our signed pre-key(s) and one-time pre-keys. Rotate the
-  signed pre-key now and then, and keep the old one for a while for
-  messages still in flight.
+- `PreKeyStore`: our signed pre-key(s) and one-time pre-keys, and the base
+  keys of the pre-key messages that started sessions (against replays).
+  Rotate the signed pre-key now and then, and keep the old one for a while
+  for messages still in flight; its base keys can go with it.
 - `SessionStore`: the session records as opaque bytes. They hold private
   keys: encrypt them at rest.
 
 Addresses are strings that the application picks: a user, a device, a peer
-ID.
+ID. The protocol authenticates keys, not addresses: `IdentityStore.isTrusted`
+is what ties an address to its key, so check that a key belongs to the
+address before trusting it on first use.
 
 ## How closely it follows the specifications
 
@@ -83,13 +86,21 @@ ID.
 | State on failure | Changes discarded | Decrypts on a copy; stores only on success |
 | Initial messages | Alice sends X3DH data with her messages | Every message is a pre-key message until Bob answers |
 
-Two things go beyond the specifications, as libsignal does:
+Some things go beyond the specifications:
 
-- A session record keeps earlier sessions (10 by default). When two parties
-  start sessions with each other at the same time, each reads what the other
-  sends in either session, and they settle on one.
-- A record remembers the base keys of the last 64 pre-key messages, so a
-  replayed pre-key message cannot start its session again.
+- A session record keeps earlier sessions (5 by default), as libsignal does,
+  for messages still in flight. When two parties start sessions with each
+  other at the same time, both keep the one with the lower base key current,
+  so they settle on one.
+- A message in an earlier session is read, but does not make that session
+  current again (libsignal does), so a held-back message cannot roll a
+  conversation back to an old session.
+- The base key of every pre-key message that started a session is kept, so
+  a replayed pre-key message cannot start a session again, under its own
+  address or another. Sessions start from pre-key messages one at a time,
+  so a one-time pre-key is used once.
+- A state remembers its last 5 receiving chains, so a duplicate of an older
+  message is reported as one, rather than taken for a new ratchet step.
 
 ### What is different on purpose
 
@@ -110,6 +121,14 @@ Two things go beyond the specifications, as libsignal does:
 - PQXDH (the post-quantum X3DH).
 
 ## Security
+
+Skipped message keys and earlier sessions are bounded in number, not
+deleted after a time: a message that never arrives keeps its key until
+2000 others are skipped or the session leaves the record.
+
+A forged message costs a receiver up to one decryption attempt per kept
+session, each up to 2 × MAX_SKIP HMACs, before it fails. Limit what one
+sender can deliver.
 
 This code has not had an independent audit. Its tests cover the
 specifications' properties (forward secrecy, post-compromise recovery,

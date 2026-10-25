@@ -88,6 +88,22 @@ void main() {
       expect(await a.publicKey.verify([1, 2, 3], sig.sublist(1)), isFalse);
     });
 
+    test('bytes that are not a point on Ed25519 are not an identity key', () {
+      // About half of all y values have no x on the curve.
+      var refused = 0;
+      for (var i = 0; i < 64; i++) {
+        final b = Uint8List(32)
+          ..[0] = i + 2
+          ..[1] = 7;
+        try {
+          IdentityKey(b);
+        } on InvalidKeyException {
+          refused++;
+        }
+      }
+      expect(refused, inInclusiveRange(10, 54));
+    });
+
     test('DH with a low-order point is refused', () async {
       final kp = await DhKeyPair.generate();
       await expectLater(kp.agree(DhPublicKey(Uint8List(32))), throwsA(isA<InvalidKeyException>()));

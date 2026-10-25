@@ -39,6 +39,11 @@ class InvalidKeyIdException extends DoubleRatchetException {
   const InvalidKeyIdException(super.message);
 }
 
+/// A stored session record does not decode.
+class InvalidSessionRecordException extends DoubleRatchetException {
+  const InvalidSessionRecordException(super.message);
+}
+
 /// A key or a signature is not valid.
 class InvalidKeyException extends DoubleRatchetException {
   const InvalidKeyException(super.message);

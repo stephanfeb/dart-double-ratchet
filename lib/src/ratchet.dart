@@ -24,8 +24,8 @@ final class RatchetLimits {
   /// are deleted (section 6.5 asks for skipped keys to be deleted in time).
   final int maxSkippedKeys;
 
-  const RatchetLimits({this.maxSkip = 1000, this.maxSkippedKeys = 2000})
-      : assert(maxSkip >= 0 && maxSkippedKeys >= maxSkip);
+  /// [SessionCipher] checks that [maxSkippedKeys] >= [maxSkip] >= 0.
+  const RatchetLimits({this.maxSkip = 1000, this.maxSkippedKeys = 2000});
 }
 
 /// A Double Ratchet header (section 3.2): the sender's ratchet public key,
@@ -210,6 +210,8 @@ RatchetState ratchetInitBob(List<int> sk, DhKeyPair bobRatchetKey) => RatchetSta
 Future<RatchetMessage> ratchetEncrypt(RatchetState state, List<int> plaintext, List<int> ad, ProtocolInfo info) async {
   final cks = state.cks;
   if (cks == null) throw StateError('no sending chain: this side has not received a message yet');
+  // Message numbers are 32 bits on the wire.
+  if (state.ns == 0xffffffff) throw StateError('sending chain used up: wait for a reply');
   final (next, mk) = await kdfCk(cks);
   state.cks = next;
   final header = Header(state.dhs.publicKey, state.pn, state.ns);

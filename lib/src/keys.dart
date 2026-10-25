@@ -187,10 +187,11 @@ final class IdentityKeyPair {
 }
 
 final _p = (BigInt.one << 255) - BigInt.from(19);
+final _d = (BigInt.from(-121665) * BigInt.from(121666).modInverse(_p)) % _p;
 
 /// The X25519 public key of an Ed25519 public key: u = (1 + y) / (1 - y)
 /// mod p (RFC 7748, section 4.1). Throws [InvalidKeyException] for bytes
-/// that are not a point encoding.
+/// that are not the encoding of a point on the curve.
 Uint8List edPublicToX25519(Uint8List edPublic) {
   if (edPublic.length != 32) throw const InvalidKeyException('an Ed25519 key is 32 bytes');
   final le = Uint8List.fromList(edPublic)..[31] &= 0x7f; // Drop the sign of x.
@@ -199,6 +200,13 @@ Uint8List edPublicToX25519(Uint8List edPublic) {
     y = (y << 8) | BigInt.from(le[i]);
   }
   if (y >= _p) throw const InvalidKeyException('not an Ed25519 key');
+  // On the curve: x^2 = (y^2 - 1) / (d y^2 + 1) must have a root (Euler's
+  // criterion), as RFC 8032 5.1.3 decoding requires.
+  final y2 = (y * y) % _p;
+  final x2 = ((y2 - BigInt.one) * ((_d * y2 + BigInt.one) % _p).modInverse(_p)) % _p;
+  if (x2 != BigInt.zero && x2.modPow((_p - BigInt.one) >> 1, _p) != BigInt.one) {
+    throw const InvalidKeyException('not a point on Ed25519');
+  }
   final denominator = (BigInt.one - y) % _p;
   if (denominator == BigInt.zero) throw const InvalidKeyException('not an Ed25519 key');
   var u = ((BigInt.one + y) * denominator.modInverse(_p)) % _p;

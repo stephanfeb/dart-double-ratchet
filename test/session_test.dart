@@ -16,20 +16,18 @@ class _Party {
   late final SessionCipher cipher;
   late SignedPreKey signed;
 
-  _Party(this.name, this.identity, {int maxStates = 10, int maxSeenBaseKeys = 64})
-      : identities = MemoryIdentityStore(identity) {
+  _Party(this.name, this.identity, {int maxStates = 5}) : identities = MemoryIdentityStore(identity) {
     cipher = SessionCipher(
       identities: identities,
       preKeys: preKeys,
       sessions: sessions,
       application: _app,
       maxStates: maxStates,
-      maxSeenBaseKeys: maxSeenBaseKeys,
     );
   }
 
-  static Future<_Party> create(String name, {int oneTime = 5, int maxStates = 10, int maxSeenBaseKeys = 64}) async {
-    final p = _Party(name, await IdentityKeyPair.generate(), maxStates: maxStates, maxSeenBaseKeys: maxSeenBaseKeys);
+  static Future<_Party> create(String name, {int oneTime = 5, int maxStates = 5}) async {
+    final p = _Party(name, await IdentityKeyPair.generate(), maxStates: maxStates);
     p.signed = await SignedPreKey.generate(p.identity, 1);
     p.preKeys
       ..addSigned(p.signed)
@@ -112,6 +110,60 @@ void main() {
     await alice.cipher.processBundle('bob', bob.bundle());
     await bob.receive(alice, await alice.send(bob, 'new'));
     await expectLater(bob.receive(alice, old), throwsA(isA<DuplicateMessageException>()));
+  });
+
+  test('a pre-key message replayed under another address does not start a session', () async {
+    await alice.cipher.processBundle('bob', bob.bundle(oneTime: false));
+    final m = await alice.send(bob, 'pay 10');
+    expect(await bob.receive(alice, m), 'pay 10');
+    await expectLater(bob.cipher.decrypt('mallory', m), throwsA(isA<DuplicateMessageException>()));
+    expect(bob.sessions.records.containsKey('mallory'), isFalse);
+    expect(bob.identities.identities.containsKey('mallory'), isFalse);
+  });
+
+  test('one pre-key message decrypted under two addresses at once: only one session', () async {
+    await alice.cipher.processBundle('bob', bob.bundle());
+    final m = await alice.send(bob, 'hi');
+    final results = await Future.wait([
+      for (final from in ['alice', 'mallory'])
+        bob.cipher.decrypt(from, m).then<Object>((p) => utf8.decode(p), onError: (Object e) => e),
+    ]);
+    expect(results.whereType<String>(), ['hi']);
+    expect(results.whereType<DoubleRatchetException>(), hasLength(1));
+  });
+
+  test('a held-back message from an earlier session is read but does not make it current', () async {
+    await alice.cipher.processBundle('bob', bob.bundle());
+    await bob.receive(alice, await alice.send(bob, 's1'));
+    await alice.receive(bob, await bob.send(alice, 'r1'));
+    final heldBack = await alice.send(bob, 'old');
+    // Alice starts a new session; Bob reads in it and answers.
+    await alice.cipher.processBundle('bob', bob.bundle());
+    await bob.receive(alice, await alice.send(bob, 's2'));
+    await alice.receive(bob, await bob.send(alice, 'r2'));
+    final s2 = SessionRecord.decode(bob.sessions.records['alice']!).current!.baseKey;
+    expect(await bob.receive(alice, heldBack), 'old');
+    expect(SessionRecord.decode(bob.sessions.records['alice']!).current!.baseKey, s2);
+    expect(await alice.receive(bob, await bob.send(alice, 'r3')), 'r3');
+    expect(SessionRecord.decode(alice.sessions.records['bob']!).current!.baseKey, s2);
+  });
+
+  test('a corrupt stored record is an InvalidSessionRecordException', () async {
+    bob.sessions.records['alice'] = Uint8List.fromList([1, 0, 0, 0, 9]);
+    await expectLater(bob.cipher.encrypt('alice', [1]), throwsA(isA<InvalidSessionRecordException>()));
+  });
+
+  test('limits are checked', () {
+    SessionCipher make({int maxStates = 5, RatchetLimits limits = const RatchetLimits()}) => SessionCipher(
+          identities: alice.identities,
+          preKeys: alice.preKeys,
+          sessions: alice.sessions,
+          application: _app,
+          maxStates: maxStates,
+          limits: limits,
+        );
+    expect(() => make(maxStates: 0), throwsArgumentError);
+    expect(() => make(limits: const RatchetLimits(maxSkip: 10, maxSkippedKeys: 5)), throwsArgumentError);
   });
 
   test('a used one-time pre-key cannot start a second session', () async {

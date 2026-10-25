@@ -9,7 +9,8 @@ import 'x3dh.dart';
 /// libp2p peer ID. The application decides which identity key belongs to
 /// an address ([isTrusted]): trust on first use, a key checked out of band
 /// (a QR code, a safety number), or a key that the address itself is (a
-/// libp2p peer ID is its Ed25519 key).
+/// libp2p peer ID is its Ed25519 key). [isTrusted] is what ties an
+/// address to a key: the protocol itself authenticates keys, not addresses.
 abstract interface class IdentityStore {
   Future<IdentityKeyPair> identityKeyPair();
 
@@ -30,6 +31,17 @@ abstract interface class PreKeyStore {
   /// Called once a session used the key: X3DH section 3.4 requires that it
   /// is deleted.
   Future<void> removeOneTimePreKey(int id);
+
+  /// Whether a session was started from a pre-key message with Alice's
+  /// [baseKey] and the signed pre-key [signedPreKeyId].
+  ///
+  /// Against replays (X3DH section 4.2): without a one-time pre-key, only
+  /// this stops a captured pre-key message from starting a session again,
+  /// under the same address or another. The base keys of a signed pre-key
+  /// can be forgotten once that signed pre-key is deleted.
+  Future<bool> isBaseKeyUsed(int signedPreKeyId, DhPublicKey baseKey);
+
+  Future<void> markBaseKeyUsed(int signedPreKeyId, DhPublicKey baseKey);
 }
 
 /// The session records, as opaque bytes. They hold private keys: encrypt
@@ -82,6 +94,16 @@ class MemoryPreKeyStore implements PreKeyStore {
 
   @override
   Future<void> removeOneTimePreKey(int id) async => oneTime.remove(id);
+
+  final usedBaseKeys = <int, Set<DhPublicKey>>{};
+
+  @override
+  Future<bool> isBaseKeyUsed(int signedPreKeyId, DhPublicKey baseKey) async =>
+      usedBaseKeys[signedPreKeyId]?.contains(baseKey) ?? false;
+
+  @override
+  Future<void> markBaseKeyUsed(int signedPreKeyId, DhPublicKey baseKey) async =>
+      (usedBaseKeys[signedPreKeyId] ??= {}).add(baseKey);
 }
 
 /// [SessionStore] in memory.
