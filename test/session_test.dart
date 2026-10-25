@@ -70,9 +70,13 @@ void main() {
     // The one-time pre-key is gone once used.
     expect(bob.preKeys.oneTime.containsKey(100), isFalse);
 
+    expect(await alice.cipher.isAwaitingReply('bob'), isTrue);
+    expect(await bob.cipher.isAwaitingReply('alice'), isFalse);
     final b0 = await bob.send(alice, 'hi');
     expect(_isPreKey(b0), isFalse);
+    expect(await alice.cipher.isAwaitingReply('bob'), isTrue);
     expect(await alice.receive(bob, b0), 'hi');
+    expect(await alice.cipher.isAwaitingReply('bob'), isFalse);
     final a2 = await alice.send(bob, 'now plain');
     expect(_isPreKey(a2), isFalse);
     expect(await bob.receive(alice, a2), 'now plain');

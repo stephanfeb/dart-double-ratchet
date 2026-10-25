@@ -10,3 +10,5 @@
   settle on the lower base key), no rollback to earlier sessions, replay
   protection across addresses, one call at a time for each address and one
   session start at a time.
+- `SessionCipher.isAwaitingReply`: whether our current session is still
+  unanswered.

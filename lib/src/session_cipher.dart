@@ -94,6 +94,12 @@ class SessionCipher {
     return current != null && current.ratchet.cks != null;
   }
 
+  /// Whether this side started the current session with [address] and has
+  /// had no message in it from [address] yet: until then, every message is
+  /// a pre-key message. An application may start a new session when this
+  /// stays true for long (the other side may have lost the pre-keys).
+  Future<bool> isAwaitingReply(String address) async => (await _load(address))?.current?.pending != null;
+
   /// The identity key of the current session with [address].
   Future<IdentityKey?> remoteIdentity(String address) async => (await _load(address))?.current?.remoteIdentity;
 
