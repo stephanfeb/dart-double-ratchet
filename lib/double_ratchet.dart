@@ -23,4 +23,13 @@ export 'src/session.dart' show SessionRecord, SessionState;
 export 'src/session_cipher.dart';
 export 'src/store.dart';
 export 'src/x3dh.dart'
-    show OneTimePreKey, PreKeyBundle, PreKeyMessage, SignedPreKey, associatedData, x3dhAlice, x3dhBob;
+    show
+        OneTimePreKey,
+        PreKeyBundle,
+        PreKeyMessage,
+        SignedPreKey,
+        associatedData,
+        bundleVersion,
+        signedPreKeyMessage,
+        x3dhAlice,
+        x3dhBob;

@@ -23,7 +23,7 @@ import 'package:double_ratchet/double_ratchet.dart';
 // Bob publishes a bundle.
 final bobIdentity = await IdentityKeyPair.generate();
 final bobPreKeys = MemoryPreKeyStore()
-  ..addSigned(await SignedPreKey.generate(bobIdentity, 1))
+  ..addSigned(await SignedPreKey.generate(bobIdentity, 1, application: 'my-app'))
   ..addOneTime(await OneTimePreKey.generateMany(100, 20));
 final bundle = PreKeyBundle.of(bobIdentity.publicKey, bobPreKeys.signed[1]!, bobPreKeys.oneTime[100]);
 
@@ -75,7 +75,7 @@ address before trusting it on first use.
 | X3DH KDF | HKDF-SHA256, F = 32 × 0xFF before the DHs, zero salt | The same |
 | X3DH AD | Encode(IK_A) ‖ Encode(IK_B) | Both Ed25519 identity keys |
 | Encode(PK) | Application choice | 0x05 ‖ u-coordinate, as libsignal |
-| Signed pre-key | Sig(IK_B, Encode(SPK_B)) | Ed25519 signature |
+| Signed pre-key | Sig(IK_B, Encode(SPK_B)) | Ed25519 signature over `utf8("<application> signed pre-key") ‖ u32(id) ‖ Encode(SPK_B)` |
 | One-time pre-keys | Deleted after use | Deleted after use (`removeOneTimePreKey`) |
 | KDF_RK | HKDF, root key as salt | The same |
 | KDF_CK | HMAC-SHA256, 0x01 → message key, 0x02 → chain key | The same |

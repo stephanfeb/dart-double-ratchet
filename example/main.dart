@@ -6,7 +6,7 @@ Future<void> main() async {
   // Bob makes his keys and publishes a bundle (here: as bytes).
   final bobIdentity = await IdentityKeyPair.generate();
   final bobPreKeys = MemoryPreKeyStore()
-    ..addSigned(await SignedPreKey.generate(bobIdentity, 1))
+    ..addSigned(await SignedPreKey.generate(bobIdentity, 1, application: 'my-app'))
     ..addOneTime(await OneTimePreKey.generateMany(100, 20));
   final published = PreKeyBundle.of(bobIdentity.publicKey, bobPreKeys.signed[1]!, bobPreKeys.oneTime[100]).encode();
 

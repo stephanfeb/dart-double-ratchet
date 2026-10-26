@@ -3,7 +3,7 @@ description: >-
   The Signal protocol's X3DH key agreement and Double Ratchet in pure Dart:
   end-to-end encrypted sessions with forward secrecy and post-compromise
   security, following the published Signal specifications.
-version: 0.1.0
+version: 0.2.0
 repository: https://github.com/stephanfeb/dart-double-ratchet
 issue_tracker: https://github.com/stephanfeb/dart-double-ratchet/issues
 topics: [cryptography, encryption, signal, e2ee, messaging]

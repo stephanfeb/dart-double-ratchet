@@ -9,13 +9,26 @@ import 'ratchet.dart';
 /// The type byte of a pre-key message.
 const preKeyMessageType = 2;
 
+/// The version byte of a bundle. Version 2 signs the signed pre-key with a
+/// label and its id ([signedPreKeyMessage]); version 1 signed the bare key
+/// and is not read.
+const bundleVersion = 2;
+
+/// What the identity key signs for the signed pre-key [key] with [id]:
+/// `utf8("<application> signed pre-key") || u32(id) || Encode(key)`.
+Uint8List signedPreKeyMessage(ProtocolInfo info, int id, DhPublicKey key) => (ByteWriter()
+      ..bytes(info.signedPreKey)
+      ..u32(id)
+      ..bytes(key.encode()))
+    .take();
+
 /// A signed pre-key (X3DH section 2.3): Bob's medium-term key, signed by
 /// his identity key, and the private half.
 final class SignedPreKey {
   final int id;
   final DhKeyPair keyPair;
 
-  /// `Sig(IK_B, Encode(SPK_B))`.
+  /// `Sig(IK_B, signedPreKeyMessage(...))`.
   final Uint8List signature;
 
   /// When it was made, so the owner can rotate it.
@@ -23,10 +36,19 @@ final class SignedPreKey {
 
   SignedPreKey(this.id, this.keyPair, this.signature, this.createdAt);
 
-  static Future<SignedPreKey> generate(IdentityKeyPair identity, int id, {DateTime? now}) async {
+  /// A new key with [id], signed by [identity] for [application] (the name
+  /// given to [SessionCipher]).
+  static Future<SignedPreKey> generate(IdentityKeyPair identity, int id,
+      {required String application, DateTime? now}) async {
     final kp = await DhKeyPair.generate();
-    return SignedPreKey(id, kp, await identity.sign(kp.publicKey.encode()), now ?? DateTime.now());
+    final signature = await identity.sign(signedPreKeyMessage(ProtocolInfo(application), id, kp.publicKey));
+    return SignedPreKey(id, kp, signature, now ?? DateTime.now());
   }
+
+  /// Whether [signature] is [identity]'s for this key under [application]:
+  /// false for a key signed for another application, or by version 0.1.
+  Future<bool> verify(IdentityKey identity, String application) =>
+      identity.verify(signedPreKeyMessage(ProtocolInfo(application), id, keyPair.publicKey), signature);
 
   Uint8List encode() => (ByteWriter()
         ..u32(id)
@@ -109,12 +131,13 @@ final class PreKeyBundle {
         oneTimePreKey: oneTime?.keyPair.publicKey,
       );
 
-  /// Checks the signature on the signed pre-key.
-  Future<bool> verify() => identityKey.verify(signedPreKey.encode(), signedPreKeySignature);
+  /// Checks the signature on the signed pre-key, made for [application].
+  Future<bool> verify(String application) => identityKey.verify(
+      signedPreKeyMessage(ProtocolInfo(application), signedPreKeyId, signedPreKey), signedPreKeySignature);
 
   Uint8List encode() {
     final w = ByteWriter()
-      ..u8(protocolVersion)
+      ..u8(bundleVersion)
       ..bytes(identityKey.ed25519)
       ..u32(signedPreKeyId)
       ..bytes(signedPreKey.encode())
@@ -132,7 +155,7 @@ final class PreKeyBundle {
   /// that are not a bundle. Does not check the signature: see [verify].
   static PreKeyBundle decode(List<int> bytes) {
     final r = ByteReader(bytes);
-    if (r.u8() != protocolVersion) throw const InvalidMessageException('unknown bundle version');
+    if (r.u8() != bundleVersion) throw const InvalidMessageException('unknown bundle version');
     final ik = IdentityKey(r.bytes(32));
     final spkId = r.u32();
     final spk = DhPublicKey.decode(r.bytes(encodedKeyLength));

@@ -32,6 +32,10 @@ class SessionCipher {
   final PreKeyStore preKeys;
   final SessionStore sessions;
   final ProtocolInfo info;
+
+  /// The name the protocol goes by in the KDFs and the signed pre-key's
+  /// signature.
+  final String application;
   final RatchetLimits limits;
 
   /// How many sessions to keep for each address (the current one and
@@ -50,7 +54,7 @@ class SessionCipher {
     required this.identities,
     required this.preKeys,
     required this.sessions,
-    required String application,
+    required this.application,
     this.limits = const RatchetLimits(),
     this.maxStates = 5,
   }) : info = ProtocolInfo(application) {
@@ -68,7 +72,7 @@ class SessionCipher {
   /// does not verify, [UntrustedIdentityException] when [identities] does
   /// not trust the bundle's identity key for [address].
   Future<void> processBundle(String address, PreKeyBundle bundle) => _locked(address, () async {
-        if (!await bundle.verify()) throw const InvalidKeyException('bad signed pre-key signature');
+        if (!await bundle.verify(application)) throw const InvalidKeyException('bad signed pre-key signature');
         if (!await identities.isTrusted(address, bundle.identityKey)) {
           throw UntrustedIdentityException(address, 'identity key not trusted');
         }

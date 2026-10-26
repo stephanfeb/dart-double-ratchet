@@ -14,13 +14,19 @@ final _aesCbc = AesCbc.with256bits(macAlgorithm: MacAlgorithm.empty);
 final class ProtocolInfo {
   final Uint8List x3dh, rootChain, messageKeys;
 
-  ProtocolInfo._(this.x3dh, this.rootChain, this.messageKeys);
+  /// The label before a signed pre-key in what the identity key signs, so
+  /// that the signature cannot stand for one the key made for something
+  /// else.
+  final Uint8List signedPreKey;
+
+  ProtocolInfo._(this.x3dh, this.rootChain, this.messageKeys, this.signedPreKey);
 
   /// The `info` strings for the application [name].
   factory ProtocolInfo(String name) => ProtocolInfo._(
         utf8.encode('$name X3DH'),
         utf8.encode('$name Ratchet'),
         utf8.encode('$name MessageKeys'),
+        utf8.encode('$name signed pre-key'),
       );
 }
 

@@ -28,7 +28,7 @@ class _Party {
 
   static Future<_Party> create(String name, {int oneTime = 5, int maxStates = 5}) async {
     final p = _Party(name, await IdentityKeyPair.generate(), maxStates: maxStates);
-    p.signed = await SignedPreKey.generate(p.identity, 1);
+    p.signed = await SignedPreKey.generate(p.identity, 1, application: _app);
     p.preKeys
       ..addSigned(p.signed)
       ..addOneTime(await OneTimePreKey.generateMany(100, oneTime));
@@ -306,11 +306,44 @@ void main() {
     final d = PreKeyBundle.decode(b.encode());
     expect(d.identityKey, b.identityKey);
     expect(d.oneTimePreKeyId, b.oneTimePreKeyId);
-    expect(await d.verify(), isTrue);
+    expect(await d.verify(_app), isTrue);
+    expect(await bob.signed.verify(bob.identity.publicKey, _app), isTrue);
     final s = await SignedPreKey.decode(bob.signed.encode());
     expect(s.keyPair.publicKey, bob.signed.keyPair.publicKey);
     final o = bob.preKeys.oneTime[100]!;
     expect((await OneTimePreKey.decode(o.encode())).keyPair.publicKey, o.keyPair.publicKey);
+  });
+
+  test('a signed pre-key signs its label and id, under the application', () async {
+    final b = bob.bundle();
+    expect(b.encode().first, 2);
+    expect(await b.verify('other'), isFalse);
+    // Version 0.1 signed the bare key: refused.
+    final bare = PreKeyBundle(
+      identityKey: b.identityKey,
+      signedPreKeyId: b.signedPreKeyId,
+      signedPreKey: b.signedPreKey,
+      signedPreKeySignature: await bob.identity.sign(b.signedPreKey.encode()),
+    );
+    expect(await bare.verify(_app), isFalse);
+    await expectLater(alice.cipher.processBundle('bob', bare), throwsA(isA<InvalidKeyException>()));
+    // The id is signed: the same key under another id does not verify.
+    final moved = PreKeyBundle(
+      identityKey: b.identityKey,
+      signedPreKeyId: b.signedPreKeyId + 1,
+      signedPreKey: b.signedPreKey,
+      signedPreKeySignature: b.signedPreKeySignature,
+    );
+    expect(await moved.verify(_app), isFalse);
+    expect(
+      signedPreKeyMessage(ProtocolInfo(_app), 7, b.signedPreKey),
+      [...utf8.encode('$_app signed pre-key'), 0, 0, 0, 7, ...b.signedPreKey.encode()],
+    );
+  });
+
+  test('a version 1 bundle is not read', () async {
+    final bytes = bob.bundle().encode()..[0] = 1;
+    expect(() => PreKeyBundle.decode(bytes), throwsA(isA<InvalidMessageException>()));
   });
 
   for (final both in const [false, true]) {
