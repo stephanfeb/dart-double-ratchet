@@ -27,6 +27,10 @@ import 'x3dh.dart';
 /// Each forged message costs up to [maxStates] decryption attempts, each
 /// with up to 3 X25519 operations and 4 x [RatchetLimits.maxSkip] HMACs,
 /// before it fails: limit what one sender can deliver.
+/// Given the plaintext of a message before [SessionCipher.decrypt] stores
+/// anything.
+typedef PlaintextCallback = Future<void> Function(Uint8List plaintext);
+
 class SessionCipher {
   final IdentityStore identities;
   final PreKeyStore preKeys;
@@ -142,24 +146,31 @@ class SessionCipher {
   /// Throws [InvalidMessageException], [DuplicateMessageException],
   /// [NoSessionException], [UntrustedIdentityException] or
   /// [InvalidKeyIdException]; no state changes then.
-  Future<Uint8List> decrypt(String address, List<int> message) => _locked(address, () async {
+  ///
+  /// [onPlaintext] runs with the plaintext before anything is stored: the
+  /// message key spent, a one-time pre-key removed, a base key marked used.
+  /// Keep the plaintext there. If it throws, nothing is stored and the
+  /// message can be decrypted again; if a store throws afterwards, the
+  /// plaintext is already kept, though the message may not decrypt again.
+  Future<Uint8List> decrypt(String address, List<int> message, {PlaintextCallback? onPlaintext}) =>
+      _locked(address, () async {
         if (message.length < 2 || message[0] != protocolVersion) {
           throw const InvalidMessageException('unknown version');
         }
         return switch (message[1]) {
-          messageType => _decryptMessage(address, RatchetMessage.decode(message)),
-          preKeyMessageType => _decryptPreKey(address, PreKeyMessage.decode(message)),
+          messageType => _decryptMessage(address, RatchetMessage.decode(message), onPlaintext),
+          preKeyMessageType => _decryptPreKey(address, PreKeyMessage.decode(message), onPlaintext),
           _ => throw const InvalidMessageException('unknown message type'),
         };
       });
 
-  Future<Uint8List> _decryptMessage(String address, RatchetMessage message) async {
+  Future<Uint8List> _decryptMessage(String address, RatchetMessage message, PlaintextCallback? onPlaintext) async {
     final record = await _load(address);
     if (record == null || record.states.isEmpty) throw NoSessionException('no session with $address');
-    return _decryptWith(address, record, record.states, message);
+    return _decryptWith(address, record, record.states, message, onPlaintext: onPlaintext);
   }
 
-  Future<Uint8List> _decryptPreKey(String address, PreKeyMessage message) async {
+  Future<Uint8List> _decryptPreKey(String address, PreKeyMessage message, PlaintextCallback? onPlaintext) async {
     if (!await identities.isTrusted(address, message.identityKey)) {
       throw UntrustedIdentityException(address, 'identity key not trusted');
     }
@@ -168,14 +179,17 @@ class SessionCipher {
     // second one and later belong to the session the first one started.
     final existing =
         record.states.where((s) => s.baseKey == message.baseKey && s.remoteIdentity == message.identityKey).toList();
-    if (existing.isNotEmpty) return _decryptWith(address, record, existing, message.message, promote: false);
+    if (existing.isNotEmpty) {
+      return _decryptWith(address, record, existing, message.message, promote: false, onPlaintext: onPlaintext);
+    }
     // A new session: one at a time across all addresses, so that a pre-key
     // message replayed to another address (or at the same moment) finds
     // its base key used and its one-time pre-key gone.
-    return _locked(_preKeyLock, () => _startSession(address, record, message));
+    return _locked(_preKeyLock, () => _startSession(address, record, message, onPlaintext));
   }
 
-  Future<Uint8List> _startSession(String address, SessionRecord record, PreKeyMessage message) async {
+  Future<Uint8List> _startSession(
+      String address, SessionRecord record, PreKeyMessage message, PlaintextCallback? onPlaintext) async {
     if (await preKeys.isBaseKeyUsed(message.signedPreKeyId, message.baseKey)) {
       throw const DuplicateMessageException('pre-key message replayed');
     }
@@ -216,10 +230,13 @@ class SessionCipher {
     } else {
       record.promote(state, maxStates);
     }
-    await preKeys.markBaseKeyUsed(message.signedPreKeyId, message.baseKey);
-    if (oneTime != null) await preKeys.removeOneTimePreKey(oneTime.id);
+    await onPlaintext?.call(plaintext);
+    // The session first: until the one-time pre-key and the base key are
+    // spent, a failure here leaves the message to decrypt again.
     await sessions.storeSession(address, record.encode());
     await identities.saveIdentity(address, message.identityKey);
+    await preKeys.markBaseKeyUsed(message.signedPreKeyId, message.baseKey);
+    if (oneTime != null) await preKeys.removeOneTimePreKey(oneTime.id);
     return plaintext;
   }
 
@@ -240,6 +257,7 @@ class SessionCipher {
     List<SessionState> candidates,
     RatchetMessage message, {
     bool promote = true,
+    PlaintextCallback? onPlaintext,
   }) async {
     final dh = message.header.dh;
     bool knows(SessionState s) =>
@@ -248,20 +266,24 @@ class SessionCipher {
     DoubleRatchetException? failure;
     for (final state in ordered) {
       final attempt = state.ratchet.copy();
+      final Uint8List plaintext;
       try {
-        final plaintext = await _ratchetDecrypt(attempt, message, state.ad);
-        final current = record.current;
-        state
-          ..ratchet = attempt
-          ..pending = null;
-        if (promote && current != state && current?.pending != null) record.promote(state, maxStates);
-        await sessions.storeSession(address, record.encode());
-        return plaintext;
+        plaintext = await _ratchetDecrypt(attempt, message, state.ad);
       } on DuplicateMessageException catch (e) {
         failure = e;
+        continue;
       } on InvalidMessageException catch (e) {
         failure ??= e;
+        continue;
       }
+      await onPlaintext?.call(plaintext);
+      final current = record.current;
+      state
+        ..ratchet = attempt
+        ..pending = null;
+      if (promote && current != state && current?.pending != null) record.promote(state, maxStates);
+      await sessions.storeSession(address, record.encode());
+      return plaintext;
     }
     throw failure ?? const InvalidMessageException('no session decrypts the message');
   }

@@ -52,6 +52,17 @@ class _Party {
 
 bool _isPreKey(Uint8List m) => m[1] == 2;
 
+/// A session store whose writes fail while [failing].
+class _FailingSessionStore extends MemorySessionStore {
+  bool failing = true;
+
+  @override
+  Future<void> storeSession(String address, Uint8List record) async {
+    if (failing) throw StateError('the store is not available');
+    return super.storeSession(address, record);
+  }
+}
+
 void main() {
   late _Party alice, bob;
 
@@ -220,6 +231,55 @@ void main() {
     await expectLater(bob.cipher.decrypt('alice', swapped.encode()), throwsA(isA<InvalidMessageException>()));
     expect(bob.sessions.records, isEmpty);
     expect(bob.preKeys.oneTime, hasLength(5));
+  });
+
+  test('onPlaintext runs before anything is stored; when it throws, the message decrypts again', () async {
+    await alice.cipher.processBundle('bob', bob.bundle());
+    final first = await alice.send(bob, 'x');
+    final oneTime = bob.preKeys.oneTime.length;
+    await expectLater(
+      bob.cipher.decrypt('alice', first, onPlaintext: (p) async {
+        expect(utf8.decode(p), 'x');
+        expect(bob.sessions.records, isEmpty);
+        expect(bob.preKeys.oneTime, hasLength(oneTime));
+        expect(bob.preKeys.usedBaseKeys, isEmpty);
+        throw StateError('not kept');
+      }),
+      throwsA(isA<StateError>()),
+    );
+    expect(bob.sessions.records, isEmpty);
+    expect(bob.preKeys.oneTime, hasLength(oneTime));
+    expect(await bob.receive(alice, first), 'x');
+    expect(bob.preKeys.oneTime, hasLength(oneTime - 1));
+
+    // A plain message too.
+    await alice.receive(bob, await bob.send(alice, 'y'));
+    final later = await alice.send(bob, 'z');
+    final before = Uint8List.fromList(bob.sessions.records['alice']!);
+    await expectLater(
+      bob.cipher.decrypt('alice', later, onPlaintext: (_) async => throw StateError('not kept')),
+      throwsA(isA<StateError>()),
+    );
+    expect(bob.sessions.records['alice'], before);
+    expect(await bob.receive(alice, later), 'z');
+  });
+
+  test('a session store that fails after onPlaintext: the plaintext was given, and the keys are not spent', () async {
+    await alice.cipher.processBundle('bob', bob.bundle());
+    final first = await alice.send(bob, 'x');
+    final oneTime = bob.preKeys.oneTime.length;
+    final store = _FailingSessionStore();
+    final failing = SessionCipher(identities: bob.identities, preKeys: bob.preKeys, sessions: store, application: _app);
+    String? kept;
+    await expectLater(
+      failing.decrypt('alice', first, onPlaintext: (p) async => kept = utf8.decode(p)),
+      throwsA(isA<StateError>()),
+    );
+    expect(kept, 'x');
+    expect(bob.preKeys.oneTime, hasLength(oneTime));
+    expect(bob.preKeys.usedBaseKeys, isEmpty);
+    store.failing = false;
+    expect(utf8.decode(await failing.decrypt('alice', first)), 'x');
   });
 
   test('a message that fails changes nothing in the store', () async {

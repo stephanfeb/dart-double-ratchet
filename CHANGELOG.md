@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.2.1
 
+- `SessionCipher.decrypt` takes `onPlaintext`, run with the plaintext
+  before anything is stored, so that a caller keeps it before its keys are
+  spent. If it throws, nothing is stored and the message decrypts again.
+- Starting a session stores the session and identity first, and marks the
+  base key used and removes the one-time pre-key after: a store that fails
+  part way leaves the keys to decrypt the message again.
 - README and `SessionCipher` docs: a forged message costs up to 4 × MAX_SKIP
   HMACs and 3 X25519 operations per kept session, not 2 × MAX_SKIP HMACs.
 
