@@ -25,8 +25,8 @@ import 'x3dh.dart';
 /// does not make that session current again.
 ///
 /// Each forged message costs up to [maxStates] decryption attempts, each
-/// with up to 2 x [RatchetLimits.maxSkip] HMACs, before it fails: limit
-/// what one sender can deliver.
+/// with up to 3 X25519 operations and 4 x [RatchetLimits.maxSkip] HMACs,
+/// before it fails: limit what one sender can deliver.
 class SessionCipher {
   final IdentityStore identities;
   final PreKeyStore preKeys;

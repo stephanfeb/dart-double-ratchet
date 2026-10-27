@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- README and `SessionCipher` docs: a forged message costs up to 4 × MAX_SKIP
+  HMACs and 3 X25519 operations per kept session, not 2 × MAX_SKIP HMACs.
+
 ## 0.2.0
 
 - The identity key signs a signed pre-key as

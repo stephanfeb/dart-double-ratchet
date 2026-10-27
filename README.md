@@ -127,8 +127,13 @@ deleted after a time: a message that never arrives keeps its key until
 2000 others are skipped or the session leaves the record.
 
 A forged message costs a receiver up to one decryption attempt per kept
-session, each up to 2 × MAX_SKIP HMACs, before it fails. Limit what one
-sender can deliver.
+session (`maxStates`, 5 by default), each up to 3 X25519 operations and
+4 × MAX_SKIP HMACs (two chains skipped, two HMACs a step), before it fails:
+20,000 HMACs and 15 X25519 operations with the defaults. A forged pre-key
+message costs up to 7 X25519 operations and 2 × MAX_SKIP HMACs. Limit what
+one sender can deliver, and lower `RatchetLimits` where messages are not
+expected out of order: `RatchetLimits(maxSkip: 0, maxSkippedKeys: 0)` takes
+the HMACs out.
 
 This code has not had an independent audit. Its tests cover the
 specifications' properties (forward secrecy, post-compromise recovery,
